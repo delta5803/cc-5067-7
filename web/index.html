@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>立体声宽度母带面板 · Stereo Width Mastering</title>
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">SW</div>
+    <div>
+      <h1>立体声宽度母带面板</h1>
+      <p class="sub">真实 M/S 矩阵 · 全通 / 短延迟去相关 · LR4 分频与低频政策 · 单声道折叠检查 — 所有读数均为实时采样测量</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <button id="btn-ab" class="btn" title="在原输入与舞台处理声之间快速切换（同播放位置）">A/B：原曲 ⇄ 处理</button>
+    <button id="btn-export" class="btn primary">导出舞台 WAV</button>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- ================= CONTROLS ================= -->
+  <section class="col controls">
+
+    <article class="card">
+      <h2>输入素材</h2>
+      <select id="material-select" class="select">
+        <option value="pair_a">A 版 · 中心人声 + 低频装饰（同相）</option>
+        <option value="pair_b">B 版 · 总相关相同，低频已反相</option>
+        <option value="mono">纯单声道（政策验证）</option>
+        <option value="probe_ok">路由探针 · 字头 + 低音（同相）</option>
+        <option value="probe_flip">路由探针 · 字头 + 低音（反相）</option>
+        <option value="impulse">脉冲响应</option>
+        <option value="sweep">对数频率扫描</option>
+        <option value="upload" hidden>我的上传文件</option>
+      </select>
+      <div class="upload-row">
+        <label class="btn small file-label">
+          上传音频（浏览器解码）
+          <input type="file" id="file-input" accept="audio/*" hidden />
+        </label>
+        <span id="material-meta" class="meta"></span>
+      </div>
+      <div id="rho-info" class="rho-info hidden"></div>
+    </article>
+
+    <article class="card">
+      <h2>输入政策判定</h2>
+      <div class="policy-head">
+        <span id="policy-badge" class="badge">—</span>
+        <label class="switch-line">
+          <input type="checkbox" id="auto-protect" checked />
+          <span>自动保护（反相低频→救援）</span>
+        </label>
+      </div>
+      <p id="policy-text" class="policy-text">等待分析…</p>
+    </article>
+
+    <article class="card">
+      <h2>舞台立体声总线</h2>
+
+      <div class="segmented" id="stage-mode">
+        <button type="button" class="btn" data-value="preserve">保留原侧声</button>
+        <button type="button" class="btn" data-value="widen">全带扩宽</button>
+        <button type="button" class="btn active" data-value="crossover">分频扩宽</button>
+      </div>
+
+      <div class="slider-row">
+        <label for="width">M/S 宽度 <output id="width-val">1.25×</output></label>
+        <input type="range" id="width" min="0" max="2.5" step="0.01" value="1.25" />
+        <div class="scale"><span>0 单声</span><span>1 原样</span><span>2.5 极宽</span></div>
+      </div>
+
+      <div class="slider-row">
+        <label for="structure">去相关结构</label>
+        <select id="structure" class="select">
+          <option value="ms">仅 M/S 增益（无去相关）</option>
+          <option value="ap" selected>全通链 AP（6 阶色散）</option>
+          <option value="delay">短延迟（侧声发送）</option>
+          <option value="haas">非对称 Haas 延迟（单声道有梳状）</option>
+        </select>
+      </div>
+
+      <div class="slider-row">
+        <label for="decorr">去相关湿声 <output id="decorr-val">32%</output></label>
+        <input type="range" id="decorr" min="0" max="1" step="0.01" value="0.32" />
+      </div>
+
+      <div class="slider-row conditional" id="delay-row">
+        <label for="delay-ms">侧声延迟时间 <output id="delay-ms-val">6.0 ms</output></label>
+        <input type="range" id="delay-ms" min="1" max="24" step="0.5" value="6" />
+      </div>
+      <div class="slider-row conditional hidden" id="haas-row">
+        <label for="haas-ms">Haas 延迟时间 <output id="haas-ms-val">9.0 ms</output></label>
+        <input type="range" id="haas-ms" min="2" max="30" step="0.5" value="9" />
+      </div>
+
+      <div class="switch-grid">
+        <label class="switch-line">
+          <input type="checkbox" id="crossover-enabled" checked />
+          <span>启用 LR4 分频</span>
+        </label>
+        <label class="switch-line">
+          <input type="checkbox" id="center-lock" checked />
+          <span>声像中心锁定（正交发送）</span>
+        </label>
+      </div>
+
+      <div class="slider-row" id="fc-row">
+        <label for="fc">分频点 <output id="fc-val">180 Hz</output></label>
+        <input type="range" id="fc" min="80" max="800" step="2" value="180" />
+      </div>
+
+      <div class="slider-row">
+        <label for="low-mode">低频侧声政策</label>
+        <select id="low-mode" class="select">
+          <option value="auto" selected>自动（反相→救援，否则居中）</option>
+          <option value="center">强制居中（丢弃 S 低频）</option>
+          <option value="rescue">相位救援（低频改取 S 分量）</option>
+          <option value="preserve">保留原始低频侧声</option>
+        </select>
+      </div>
+
+      <div class="slider-row">
+        <label for="out-gain">输出增益 <output id="out-gain-val">0.0 dB</output></label>
+        <input type="range" id="out-gain" min="-8" max="4" step="0.1" value="0" />
+      </div>
+    </article>
+
+    <article class="card">
+      <h2>单声道转播总线（同时取流）</h2>
+      <select id="broadcast-route" class="select">
+        <option value="auto" selected>自动相位政策（反相低频→安全路由）</option>
+        <option value="direct_mid">保留原声：原始 M=(L+R)/2 直送</option>
+        <option value="fold_stage">扩宽分支：舞台扩宽链后折叠</option>
+        <option value="phase_safe">分频旁路：相位安全低频（按能量选 M/S）</option>
+      </select>
+      <p class="meta" id="route-effective">实际路由：—</p>
+    </article>
+
+    <article class="card audition">
+      <h2>真实音频试听 / 切换</h2>
+      <div class="source-grid">
+        <button class="btn source active" data-source="original">原输入</button>
+        <button class="btn source" data-source="stage">舞台立体声</button>
+        <button class="btn source" data-source="broadcast">转播单声道</button>
+        <button class="btn source" data-source="fold">舞台折叠检查</button>
+      </div>
+      <div class="transport">
+        <button id="play-pause" class="btn primary round">▶</button>
+        <span id="time-current" class="time">0:00.0</span>
+        <input type="range" id="seek" min="0" max="1000" value="0" />
+        <span id="time-total" class="time">0:00.0</span>
+      </div>
+      <p class="meta" id="now-source">当前：原输入（Web Audio 实时播放已渲染的真实 DSP 输出）</p>
+    </article>
+  </section>
+
+  <!-- ================= RESULTS ================= -->
+  <section class="col results">
+
+    <div class="meter-grid">
+      <article class="card corr-card">
+        <h2>声道相关系数 ρ（舞台输出）</h2>
+        <div class="rho-readout">
+          <span id="rho-big" class="rho-big">—</span>
+          <span id="rho-tag" class="rho-tag"></span>
+        </div>
+        <div class="rho-meter">
+          <div class="rho-gradient"></div>
+          <div id="rho-marker" class="rho-marker" style="left:50%"></div>
+        </div>
+        <div class="rho-labels"><span>−1 反相</span><span>0 无关</span><span>+1 同相</span></div>
+        <div class="rho-sub">
+          <div><span>输入总 ρ</span><b id="rho-input">—</b></div>
+          <div><span>输入低频 ρ</span><b id="rho-bass-in">—</b></div>
+          <div><span>舞台低频 ρ</span><b id="rho-bass-out">—</b></div>
+        </div>
+      </article>
+
+      <article class="card tiles-card">
+        <h2>电平 / 能量 / 相位实测</h2>
+        <div class="tiles">
+          <div class="tile"><span>舞台 L RMS</span><b id="t-rms-l">—</b></div>
+          <div class="tile"><span>舞台 R RMS</span><b id="t-rms-r">—</b></div>
+          <div class="tile"><span>左右平衡</span><b id="t-balance">—</b></div>
+          <div class="tile"><span>峰值</span><b id="t-peak">—</b></div>
+          <div class="tile"><span>削波采样</span><b id="t-clips">—</b></div>
+          <div class="tile"><span>HF 梳状偏差</span><b id="t-comb">—</b></div>
+          <div class="tile"><span>低频合成 Δ</span><b id="t-lowdelta">—</b></div>
+          <div class="tile"><span>级间延迟 ITD</span><b id="t-itd">—</b></div>
+        </div>
+      </article>
+    </div>
+
+    <article class="card">
+      <h2>处理警告（由实测阈值触发）</h2>
+      <div id="warnings" class="warnings"><p class="meta">尚未渲染。</p></div>
+    </article>
+
+    <article class="card">
+      <h2>短时相关性轨迹（100 ms 窗）</h2>
+      <canvas id="chart-trace" class="chart short"></canvas>
+      <div class="legend"><span class="dot stage"></span>舞台输出 <span class="dot input"></span>输入</div>
+    </article>
+
+    <div class="chart-grid two">
+      <article class="card">
+        <h2>折叠频谱：输入 M vs 舞台折叠 vs 转播</h2>
+        <canvas id="chart-spectrum" class="chart"></canvas>
+        <div class="legend"><span class="dot in"></span>输入中轨 <span class="dot fold"></span>舞台折叠 <span class="dot bc"></span>转播单声道</div>
+      </article>
+      <article class="card">
+        <h2>左右幅度响应（脉冲实测）</h2>
+        <canvas id="chart-mag" class="chart"></canvas>
+        <div class="legend"><span class="dot L"></span>L <span class="dot R"></span>R</div>
+      </article>
+    </div>
+
+    <article class="card">
+      <h2>左右相位差 Δφ(f)（展开相位）</h2>
+      <canvas id="chart-phase" class="chart short"></canvas>
+      <p class="meta" id="xo-meta">分频相位测量中…</p>
+    </article>
+
+    <article class="card" id="marker-card">
+      <h2>路由探针：送出单声道中的字头与低音幅值</h2>
+      <div class="table-wrap">
+        <table id="marker-table">
+          <thead><tr><th>分支</th><th>字头峰偏 ms</th><th>能量质心 ms</th><th>晚到能量比</th><th>低音 RMS dB</th></tr></thead>
+          <tbody><tr><td colspan="5" class="meta">选择“路由探针”素材后显示实测。</td></tr></tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="card selftest">
+      <div class="selftest-head">
+        <h2>脉冲 / 扫频 / 人声替代自检（与 npm test 同一套）</h2>
+        <button id="run-selftest" class="btn primary">运行全部检查</button>
+      </div>
+      <p id="selftest-summary" class="meta">自检会真实运行 M/S、等 ρ 对、路由探针、LR4、响应/延迟、扫频对比与能量核算。</p>
+      <div id="selftest-list" class="check-list"></div>
+    </article>
+
+  </section>
+</main>
+
+<footer class="footer">
+  纯前端真实 DSP 链（无固定装饰数据）· 启动：<code>node server.js</code> → http://127.0.0.1:8770/ · 命令行测试：<code>npm test</code>
+</footer>
+
+<script type="module" src="./js/ui/app.js"></script>
+</body>
+</html>

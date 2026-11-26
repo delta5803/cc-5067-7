@@ -1,0 +1,14 @@
+{
+  "name": "stereo-width-mastering-panel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Real stereo width processor: M/S gain, all-pass / short-delay decorrelation, crossover bass management, mono fold-down checks and live measurements.",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/run.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
