@@ -1,3 +1,6 @@
+// Browser smoke: drives the real panel in headless Chromium. Verifies the width
+// controls, mono checks, correlation + audition status, automation feedback and
+// the documented WAV export. Command-line helpers live in test/*.mjs.
 import { chromium } from 'playwright';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -58,8 +61,8 @@ await page.screenshot({ path: `${shots}/01-panel-a.png`, fullPage: true });
 // Wait for the auto-run requirement suite.
 await page.waitForFunction(() => {
   const t = document.getElementById('selftest-summary')?.textContent || '';
-  return t.includes('全部 11 项') || t.includes('失败');
-}, { timeout: 90000 });
+  return t.includes('全部 15 项') || t.includes('失败');
+}, { timeout: 120000 });
 const summary = await page.textContent('#selftest-summary');
 console.log('selftest:', summary);
 const failCount = await page.locator('.check-item.fail').count();
@@ -143,6 +146,16 @@ if (riff !== 'RIFF' || wave !== 'WAVE' || channels !== 2 || bitsPerSample !== 16
   throw new Error('exported file is not a stereo 16-bit WAV');
 }
 
+// Folded mono export must also be a real WAV, produced from the monitor fold.
+const [foldDownload] = await Promise.all([
+  page.waitForEvent('download', { timeout: 15000 }),
+  page.click('#btn-export-fold'),
+]);
+const foldPath = await foldDownload.path();
+const foldHead = readFileSync(foldPath);
+console.log('fold export =', foldDownload.suggestedFilename(), foldHead.length, 'bytes');
+if (foldHead.subarray(0, 4).toString('ascii') !== 'RIFF') throw new Error('fold export is not a WAV');
+
 // Upload path: decode a real generated WAV and run it through the chain.
 await page.setInputFiles('#file-input', uploadPath);
 await page.waitForFunction(() => document.getElementById('material-select').value === 'upload', null, { timeout: 15000 });
@@ -155,6 +168,64 @@ const uploadMeta = await page.textContent('#material-meta');
 const uploadRho = await page.textContent('#rho-big');
 console.log('upload rendered =', uploadMeta, 'rho =', uploadRho);
 if (!/44100/.test(uploadMeta)) throw new Error('uploaded WAV sample rate not reflected');
+
+// --- Width automation: the distorted band is surfaced and can be applied -----
+await page.selectOption('#material-select', 'pair_b');
+await page.waitForTimeout(1000);
+const autoBand = await page.textContent('#automation-band');
+const autoHint = await page.textContent('#automation-hint');
+console.log('automation band =', autoBand);
+console.log('automation hint =', autoHint);
+if (!/最差频带/.test(autoBand) || /—$/.test(autoBand)) throw new Error('automation band not populated');
+
+const widthBefore = parseFloat(await page.inputValue('#width'));
+await page.click('#btn-apply-automation');
+await page.waitForTimeout(500);
+const widthAfter = parseFloat(await page.inputValue('#width'));
+console.log('automation width', widthBefore, '->', widthAfter);
+if (!(widthAfter < widthBefore)) throw new Error('apply automation did not reduce width');
+
+// --- Width slider actually changes the measured correlation ------------------
+// Use the well-behaved correlated pair A (pair_b is anti-phase low-end, where a
+// single whole-buffer correlation is not monotonic in width).
+await page.selectOption('#material-select', 'pair_a');
+await page.waitForTimeout(900);
+await page.evaluate(() => {
+  const w = document.getElementById('width');
+  w.value = '2.4'; w.dispatchEvent(new Event('input', { bubbles: true }));
+});
+await page.waitForTimeout(700);
+const rhoWide2 = await page.textContent('#rho-big');
+await page.evaluate(() => {
+  const w = document.getElementById('width');
+  w.value = '0.5'; w.dispatchEvent(new Event('input', { bubbles: true }));
+});
+await page.waitForTimeout(700);
+const rhoNarrow = await page.textContent('#rho-big');
+console.log('width 2.4 rho =', rhoWide2, 'width 0.5 rho =', rhoNarrow);
+if (parseFloat(rhoWide2) >= parseFloat(rhoNarrow)) throw new Error('width did not change correlation');
+
+// --- Runtime status card shows chain + correlation + fold policy ------------
+const runStatus = await page.textContent('#run-status');
+const stRho = await page.textContent('#st-rho');
+const stChain = await page.textContent('#st-chain');
+console.log('status =', runStatus, '|', stChain, '| rho', stRho);
+if (!/待机|运行中/.test(runStatus)) throw new Error('run status not shown');
+if (!/分频|全带/.test(stChain)) throw new Error('status chain not populated');
+if (!Number.isFinite(parseFloat(stRho))) throw new Error('status correlation not populated');
+
+// --- Fold policy is persisted and switches the monitor fold -----------------
+await page.selectOption('#fold-polarity', 'auto');
+await page.waitForTimeout(400);
+const stFoldPolicy = await page.textContent('#st-fold-policy');
+const persisted = await page.evaluate(() => {
+  try { return JSON.parse(localStorage.getItem('sw-project-side-policy-v1') || '{}'); } catch { return {}; }
+});
+console.log('fold policy =', stFoldPolicy, '| persisted =', JSON.stringify(persisted));
+if (!/极性校正/.test(stFoldPolicy)) throw new Error('fold policy label not updated');
+if (persisted.foldPolarity !== 'auto') throw new Error('fold policy not persisted with project');
+
+await page.screenshot({ path: `${shots}/05-status-automation.png`, fullPage: true });
 
 // Mobile width screenshot.
 await page.setViewportSize({ width: 430, height: 900 });

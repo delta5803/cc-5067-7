@@ -3,7 +3,9 @@
 
 import { getBuiltinMaterial } from '../audio/materials.js';
 import { renderChain, measureImpulseResponse } from '../chain.js';
-import { DEFAULT_CONFIG, STRUCTURE_LABELS } from '../config.js';
+import {
+  DEFAULT_CONFIG, STRUCTURE_LABELS, loadProjectPolicy, saveProjectPolicy, clearProjectPolicy,
+} from '../config.js';
 import { encodeWav16 } from '../audio/wav.js';
 import { Player, formatTime } from './player.js';
 import { drawTrace, drawSpectrum, drawMagnitude, drawPhase } from './charts.js';
@@ -15,10 +17,13 @@ const state = {
   audio: null,          // {L,R,sr,markers,name}
   materialId: 'pair_a',
   uploaded: null,
+  savedPolicy: null,    // side-channel policy loaded from the project
   last: null,           // { result, response }
   renderTimer: 0,
   renderToken: 0,
   seeking: false,
+  playing: false,
+  lastAnomalyKey: '',
 };
 
 const player = new Player();
@@ -43,7 +48,44 @@ function readConfig() {
     centerLock: $('center-lock').checked,
     autoProtect: $('auto-protect').checked,
     outGainDb: parseFloat($('out-gain').value),
+    foldPolarity: $('fold-polarity').value,
   };
+}
+
+// Persist the side-channel policy so the monitor fold and broadcast feed read
+// the same set on reload. This is the "随工程保存的侧声道处理策略".
+function persistPolicy() {
+  state.savedPolicy = saveProjectPolicy(readConfig());
+}
+
+function applyPolicyToControls(policy) {
+  if (!policy) return;
+  const set = (id, val) => { const el = $(id); if (el && val !== undefined) el.value = String(val); };
+  const check = (id, val) => { const el = $(id); if (el && typeof val === 'boolean') el.checked = val; };
+  set('width', policy.width);
+  set('structure', policy.structure);
+  set('decorr', policy.decorr);
+  set('delay-ms', policy.delayMs);
+  set('haas-ms', policy.haasMs);
+  set('fc', policy.fc);
+  set('low-mode', policy.lowMode);
+  set('broadcast-route', policy.broadcast);
+  set('fold-polarity', policy.foldPolarity);
+  check('crossover-enabled', policy.crossover);
+  check('center-lock', policy.centerLock);
+  check('auto-protect', policy.autoProtect);
+  if (policy.stageMode) {
+    document.querySelectorAll('#stage-mode .btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.value === policy.stageMode);
+    });
+  }
+}
+
+function updateFoldPolicyNote() {
+  const mode = $('fold-polarity').value;
+  $('fold-policy-note').textContent = mode === 'auto'
+    ? '极性校正折叠：反相声道会先被纠正再折叠，能量得以回收（随工程保存）。'
+    : '标准折叠 (L+R)/2：反相声道会完全抵消，仅用于暴露问题（随工程保存）。';
 }
 
 function updateLabels() {
@@ -99,6 +141,7 @@ function doRender() {
   if (!state.audio) return;
   const token = ++state.renderToken;
   const cfg = readConfig();
+  persistPolicy();
   let result, response;
   try {
     result = renderChain(state.audio.L, state.audio.R, state.audio.sr, cfg, state.audio.markers);
@@ -115,14 +158,96 @@ function doRender() {
   updateMeters(result, response);
   updateWarnings(result.warnings);
   updateMarkerTable(result.measurements);
+  updateAutomation(result.widthAutomation);
+  updateStatus(result);
   drawAll(result.measurements, response);
 
   player.refreshBuffers({
     original: state.audio,
     stage: result.stage,
     broadcast: result.broadcast,
-    fold: { L: result.stageFold, R: result.stageFold },
+    fold: { L: result.monitorFold, R: result.monitorFold },
   }, state.audio.sr);
+}
+
+function updateAutomation(automation) {
+  const band = automation && automation.distortedBand;
+  if (band) {
+    $('automation-band').textContent =
+      `最差频带：${band.name} ${band.low}–${band.high} Hz · 折叠保留 ${band.retentionDb} dB · ρ=${band.rho}`;
+  } else {
+    $('automation-band').textContent = '最差频带：—';
+  }
+  const hint = automation && automation.suggestion;
+  $('automation-hint').textContent = hint || '当前折叠未触发频带告警；宽度自动化无建议。';
+  const btn = $('btn-apply-automation');
+  btn.disabled = !hint;
+  btn.dataset.band = band ? band.name : '';
+  $('automation-applied').textContent = '';
+}
+
+function applyAutomation() {
+  const band = state.last && state.last.result.widthAutomation.distortedBand;
+  if (!band) return;
+  // Pull width down one notch and slightly reduce wet decorrelation, then
+  // re-render so the effect on the named band is visible.
+  const w = $('width');
+  w.value = String(Math.max(0, parseFloat(w.value) - 0.15));
+  const d = $('decorr');
+  d.value = String(Math.max(0, parseFloat(d.value) - 0.05));
+  updateLabels();
+  $('automation-applied').textContent = `已对 ${band.name} 应用：宽度 −0.15、湿声 −0.05`;
+  scheduleRender(0);
+}
+
+function updateStatus(result) {
+  const m = result.measurements;
+  const rho = m.stage.rho;
+  const effective = result.effective;
+  $('st-chain').textContent =
+    `${effective.stageMode}${effective.useCrossover ? ' / 分频 ' + (result.cfg.fc) + 'Hz' : ' / 全带'} · 低频=${effective.lowMode || '—'}`;
+  $('st-rho').textContent = rho.toFixed(3);
+  $('st-fold-policy').textContent = result.cfg.foldPolarity === 'auto' ? '极性校正折叠' : '标准 (L+R)/2';
+
+  const running = state.playing;
+  const badge = $('run-status');
+  badge.className = 'run-badge ' + (running ? 'running' : 'idle');
+  badge.textContent = running ? '运行中' : '待机';
+
+  // Anomalies: low correlation, folded-band loss, monitoring a collapsed fold.
+  const anomalies = [];
+  if (rho < -0.05) anomalies.push({ level: 'danger', text: `声道相关性异常：ρ=${rho.toFixed(3)}（负相关，单声道有抵消风险）` });
+  else if (rho < 0.15) anomalies.push({ level: 'warn', text: `声道相关性偏低：ρ=${rho.toFixed(3)}（很宽 / 弱相关，请检查单声道）` });
+  const band = m.bandDistortion && m.bandDistortion.worstBand;
+  if (band && band.retentionDb < -10) {
+    anomalies.push({ level: 'danger', text: `折叠音质异常：${band.name} 带保留 ${band.retentionDb} dB（明显抵消）` });
+  } else if (band && band.retentionDb < -4) {
+    anomalies.push({ level: 'warn', text: `折叠音质偏弱：${band.name} 带保留 ${band.retentionDb} dB` });
+  }
+  if (result.cfg.foldPolarity === 'plain' && m.input.rho < 0) {
+    anomalies.push({ level: 'warn', text: '试听相关异常：输入反相但折叠为 plain，(L+R)/2 会抵消；可切到极性校正折叠。' });
+  }
+
+  const key = anomalies.map((a) => a.level + a.text).join('|');
+  if (key !== state.lastAnomalyKey) {
+    state.lastAnomalyKey = key;
+    const box = $('status-anomalies');
+    box.innerHTML = '';
+    if (!anomalies.length) {
+      const p = document.createElement('p');
+      p.className = 'meta';
+      p.textContent = '未检出声道相关性或试听相关异常。';
+      box.appendChild(p);
+    } else {
+      for (const a of anomalies) {
+        const div = document.createElement('div');
+        div.className = 'warning ' + a.level;
+        div.innerHTML = `<span class="dot-i">${a.level === 'danger' ? '✕' : '!'}</span><span></span>`;
+        div.querySelector('span:last-child').textContent = a.text;
+        box.appendChild(div);
+      }
+    }
+  }
 }
 
 function rhoCategory(r) {
@@ -329,6 +454,20 @@ function exportWav() {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
+// Export both the stereo stage and its folded mono so the doc's "listen to the
+// fold" step is one click: the fold honours the saved foldPolarity policy.
+function exportFold() {
+  if (!state.last) return;
+  const fold = state.last.result.monitorFold;
+  const blob = encodeWav16(fold, fold, state.audio.sr);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'stereo-width-fold.wav';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
 // ---------- wiring ----------
 
 function bind() {
@@ -339,21 +478,33 @@ function bind() {
   });
 
   for (const id of ['width', 'decorr', 'delay-ms', 'haas-ms', 'fc', 'out-gain']) {
-    $(id).addEventListener('input', () => { updateLabels(); scheduleRender(); });
+    $(id).addEventListener('input', () => { updateLabels(); persistPolicy(); scheduleRender(); });
   }
-  for (const id of ['structure', 'low-mode', 'broadcast-route']) {
-    $(id).addEventListener('change', () => { updateLabels(); scheduleRender(); });
+  for (const id of ['structure', 'low-mode', 'broadcast-route', 'fold-polarity']) {
+    $(id).addEventListener('change', () => {
+      updateLabels(); updateFoldPolicyNote(); persistPolicy(); scheduleRender();
+    });
   }
   for (const id of ['crossover-enabled', 'center-lock', 'auto-protect']) {
-    $(id).addEventListener('change', scheduleRender);
+    $(id).addEventListener('change', () => { persistPolicy(); scheduleRender(); });
   }
 
   document.querySelectorAll('#stage-mode .btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('#stage-mode .btn').forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
+      persistPolicy();
       scheduleRender();
     });
+  });
+
+  $('btn-apply-automation').addEventListener('click', applyAutomation);
+  $('btn-reset-policy').addEventListener('click', () => {
+    clearProjectPolicy();
+    applyPolicyToControls(DEFAULT_CONFIG);
+    updateLabels();
+    updateFoldPolicyNote();
+    scheduleRender(0);
   });
 
   document.querySelectorAll('.source').forEach((btn) => {
@@ -366,6 +517,7 @@ function bind() {
     await player.playSource(target);
   });
   $('btn-export').addEventListener('click', exportWav);
+  $('btn-export-fold').addEventListener('click', exportFold);
   $('run-selftest').addEventListener('click', runSelfTest);
 
   const seek = $('seek');
@@ -384,12 +536,15 @@ function bind() {
     $('time-total').textContent = formatTime(dur);
   };
   player.onPlayState = (playing, current) => {
+    state.playing = playing;
     $('play-pause').textContent = playing ? '❚❚' : '▶';
     document.querySelectorAll('.source').forEach((b) => {
       b.classList.toggle('active', b.dataset.source === current);
     });
-    const names = { original: '原输入', stage: '舞台立体声', broadcast: '转播单声道', fold: '舞台折叠检查' };
+    const names = { original: '原输入', stage: '舞台立体声', broadcast: '转播单声道', fold: '舞台折叠（按策略）' };
     $('now-source').textContent = `当前：${names[current] || current} · Web Audio 真实播放 DSP 渲染结果`;
+    $('st-source').textContent = `${names[current] || current}${playing ? ' · 播放中' : ' · 暂停'}`;
+    if (state.last) updateStatus(state.last.result);
   };
 
   let resizeTimer = 0;
@@ -403,7 +558,12 @@ function bind() {
 
 function init() {
   bind();
+  // Load the project's saved side-channel policy before the first render so the
+  // monitor fold reflects what was last stored, not the built-in defaults.
+  state.savedPolicy = loadProjectPolicy();
+  if (state.savedPolicy) applyPolicyToControls(state.savedPolicy);
   updateLabels();
+  updateFoldPolicyNote();
   loadSelectedMaterial();
   // Auto-run the real requirement suite once shortly after first paint.
   setTimeout(runSelfTest, 600);

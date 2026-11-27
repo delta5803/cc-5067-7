@@ -1,9 +1,10 @@
 // Explicit decorrelation structures.
 //  - ap:     dispersive chain of RBJ all-pass biquads (flat magnitude, shifted phase)
 //  - delay:  exact short integer delay (linear phase vs frequency)
-//  - haas:   asymmetric channel delay mixed in by the pipeline
+//  - haas:   asymmetric channel delay mixed in at the right channel only
 
 import { biquadCoeffs, processChain } from './biquad.js';
+import { impulseSpectrum } from './fft.js';
 
 export function delaySamples(x, delayInSamples) {
   const d = Math.max(0, Math.round(delayInSamples));
@@ -42,4 +43,20 @@ export function delayImpulse(sampleRate, ms, length = 4096) {
   const delta = new Float64Array(length);
   delta[0] = 1;
   return delaySamples(delta, delayInSamples(ms, sampleRate));
+}
+
+// Magnitude flatness + unwrapped phase span of the all-pass network, measured
+// from its impulse response so the docs can cite a real number.
+export function allPassFrequencyResponse(sampleRate, character = 1, length = 4096) {
+  const ir = allpassImpulse(sampleRate, character, length);
+  const spec = impulseSpectrum(ir, sampleRate, length);
+  let maxDevDb = 0, phMin = Infinity, phMax = -Infinity;
+  for (let k = 1; k < spec.freqs.length; k++) {
+    const f = spec.freqs[k];
+    if (f < 120 || f > 10000) continue;
+    maxDevDb = Math.max(maxDevDb, Math.abs(spec.magDb[k]));
+    phMin = Math.min(phMin, spec.phase[k]);
+    phMax = Math.max(phMax, spec.phase[k]);
+  }
+  return { maxDevDb: Number(maxDevDb.toFixed(3)), phaseSpanRad: Number((phMax - phMin).toFixed(2)) };
 }

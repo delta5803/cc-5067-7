@@ -2,7 +2,20 @@
 // Every meter / chart in the UI is fed by these functions; no decorative data.
 
 import { fft, nextPow2, welchMagnitude, impulseSpectrum } from '../dsp/fft.js';
-import { lowPass, bandLimit } from '../dsp/crossover.js';
+import { lowPass, bandLimit, lr4Split } from '../dsp/crossover.js';
+
+// Fixed diagnostic sub-bands for the side-channel fold. The band that loses most
+// energy under a standard fold is reported back to width automation.
+const FOLD_BANDS = [
+  { name: 'sub', low: 20, high: 60 },
+  { name: 'bass', low: 60, high: 120 },
+  { name: 'lowmid', low: 120, high: 250 },
+  { name: 'mid', low: 250, high: 600 },
+  { name: 'himid', low: 600, high: 1500 },
+  { name: 'presence', low: 1500, high: 4000 },
+  { name: 'high', low: 4000, high: 10000 },
+];
+
 
 export function mean(x) {
   let m = 0;
@@ -336,11 +349,43 @@ function median(arr) {
   return a.length % 2 ? a[mid] : 0.5 * (a[mid - 1] + a[mid]);
 }
 
+// Per-band mono-fold retention. For each band we compare the folded energy with
+// the per-channel energy: 0 dB = fold keeps the band intact, −3 dB = band is
+// fully decorrelated (expected side loss), below that = phase cancellation. The
+// worst band is what width automation is told to watch.
+export function bandDistortion(L, R, fold, sr) {
+  const bands = FOLD_BANDS.map((b) => {
+    const eL = energy(bandLimit(L, b.low, b.high, sr));
+    const eR = energy(bandLimit(R, b.low, b.high, sr));
+    const eFold = energy(bandLimit(fold, b.low, b.high, sr));
+    const perChannelRms = Math.sqrt((eL + eR) / 2);
+    const foldRms = Math.sqrt(eFold);
+    const retentionDb = Number((db(foldRms) - db(perChannelRms)).toFixed(2));
+    const rho = correlation(bandLimit(L, b.low, b.high, sr), bandLimit(R, b.low, b.high, sr));
+    return {
+      ...b,
+      retentionDb,
+      rho: Number(rho.toFixed(3)),
+      // Below −3 dB is cancellation; −3 dB is the honest floor for decorrelated
+      // content, so only the extra loss beyond it is "damage".
+      cancellationDb: Number((retentionDb + 3).toFixed(2)),
+    };
+  });
+  let worstBand = bands[0];
+  for (const b of bands) if (b.retentionDb < worstBand.retentionDb) worstBand = b;
+  return {
+    bands,
+    worstBand: { ...worstBand },
+    worstRetentionDb: worstBand.retentionDb,
+    // A wider setting that pushes this more negative has not improved anything.
+    maxCancellationDb: Math.max(0, -(worstBand.retentionDb + 3)),
+  };
+}
+
 // Whole-render measurement bundle (JSON-safe).
 export function measureRender(bundle) {
   const { inputL, inputR, stageL, stageR, bcL, bcR, stageFold, dryMid, sr, markers } = bundle;
   const out = {};
-
   out.input = {
     rho: Number(correlation(inputL, inputR).toFixed(4)),
     rhoBass: Number(bandCorrelation(inputL, inputR, 150, sr).toFixed(4)),
@@ -372,6 +417,11 @@ export function measureRender(bundle) {
 
   out.rhoTrace = correlationTrace(stageL, stageR, sr);
   out.inputRhoTrace = correlationTrace(inputL, inputR, sr);
+
+  // Per-band side-channel fold: standard (L+R)/2 vs the scene fold. The band
+  // that collapses most is the one width automation is told to watch.
+  out.bandDistortion = bandDistortion(stageL, stageR, stageFold, sr);
+  out.distortedBand = out.bandDistortion.worstBand;
 
   out.spectrum = {
     inputMid: logSpectrum(dryMid, sr, 4096),

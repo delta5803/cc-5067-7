@@ -107,7 +107,7 @@ export function processStage(L, R, cfg, analysis = null) {
   let Lo, Ro;
 
   if (useCrossover) {
-    const fc = cfg.fc ?? 200;
+    const fc = cfg.fc ?? 180;
     const mSplit = lr4Split(M, fc, sr);
     const sSplit = lr4Split(S, fc, sr);
     const Mlo = mSplit.lo, Mhi = mSplit.hi;
@@ -172,7 +172,7 @@ export function processStage(L, R, cfg, analysis = null) {
     const k = 0.25 + 0.75 * decorr; // decorr 0..1 -> k .25..1.0
     let echoSrc = Ro;
     if (useCrossover && cfg.crossover !== false) {
-      echoSrc = highPass(Ro, cfg.fc ?? 200, sr, 4);
+      echoSrc = highPass(Ro, cfg.fc ?? 180, sr, 4);
     }
     const echo = delaySamples(echoSrc, dSamples);
     for (let i = 0; i < n; i++) Ro[i] += k * echo[i];
@@ -194,7 +194,7 @@ export function processBroadcast(Lin, Rin, stage, cfg, analysis = null) {
     for (let i = 0; i < n; i++) mono[i] = 0.5 * (stage.L[i] + stage.R[i]);
   } else if (route === 'phase_safe') {
     // Phase-aware managed mono around the same crossover frequency.
-    const fc = cfg.fc ?? 200;
+    const fc = cfg.fc ?? 180;
     const { M, S } = msEncode(Lin, Rin);
     const mSplit = lr4Split(M, fc, cfg.sr);
     const sLo = lr4Split(S, fc, cfg.sr).lo;

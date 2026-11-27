@@ -1,0 +1,108 @@
+{
+  "sampleRate": 48000,
+  "generatedFrom": "web/js/ (production DSP, read-only)",
+  "defaults": {
+    "width": 1.25,
+    "structure": "ap",
+    "decorr": 0.32,
+    "delayMs": 6,
+    "haasMs": 9,
+    "crossover": true,
+    "fc": 180,
+    "lowMode": "auto",
+    "broadcast": "auto",
+    "centerLock": true,
+    "autoProtect": true,
+    "stageMode": "crossover",
+    "foldPolarity": "plain"
+  },
+  "decorrelators": {
+    "allpassMaxMagDevDb": 0,
+    "allpassPhaseSpanRad": 31.89,
+    "delayCommandSamples": 288,
+    "delayPeakSample": 288
+  },
+  "contract": {
+    "ms": {
+      "label": "M/S 增益（无去相关）",
+      "monoFoldExact": true,
+      "addsDelay": false,
+      "risk": "none",
+      "note": "S′=width·S，L′=M+S′，R′=M−S′，折叠严格 = 2M；宽度不能为纯单声道生成侧声。"
+    },
+    "ap": {
+      "label": "全通链去相关",
+      "monoFoldExact": false,
+      "addsDelay": false,
+      "risk": "low",
+      "note": "D=全通(M)；幅度平坦、相位色散。发送与 M 正交后左右能量平衡；折叠 (L+R)/2 仍=M。"
+    },
+    "delay": {
+      "label": "短延迟去相关",
+      "monoFoldExact": false,
+      "addsDelay": true,
+      "risk": "medium",
+      "note": "D=M 的整数延迟；只影响侧声。极端宽度/湿声下折叠仍=M，但侧声内容被延迟搬移。"
+    },
+    "haas": {
+      "label": "非对称 Haas 延迟",
+      "monoFoldExact": false,
+      "addsDelay": true,
+      "risk": "high",
+      "note": "只在右声道叠加延迟回声，折叠 (L+R)/2 出现真实梳状染色与能量偏置，非无损。"
+    }
+  },
+  "bandEdges": {
+    "useCrossover": true,
+    "lowBand": [
+      0,
+      180
+    ],
+    "highBand": [
+      180,
+      null
+    ]
+  },
+  "phaseSample": {
+    "freq": 80,
+    "channelRmsDb": -9.03,
+    "plainFoldRmsDb": -120,
+    "deltaVsChannelDb": -110.97,
+    "polaritySign": -1
+  },
+  "bandSample": {
+    "fc": 180,
+    "lowRho": -1,
+    "highRho": 0.9994,
+    "lowEnergyL": -9.11,
+    "lowEnergyR": -9.11,
+    "highEnergyL": -14.09,
+    "highEnergyR": -14.08
+  },
+  "antiPhaseFold": {
+    "preserveWorstBand": "sub",
+    "preserveWorstRetentionDb": -27.42,
+    "preserveWorstRho": -0.996,
+    "centerWorstBand": "sub",
+    "centerWorstRetentionDb": -0.97,
+    "pairBrho": 0.4965,
+    "pairBrhoBass": -0.9907
+  },
+  "powerAccounts": {
+    "symmetricPerChannelEqual": true,
+    "symmetricFoldMidDeltaDb": 0,
+    "haasBalanceDb": -2.66
+  },
+  "widthNotQuality": {
+    "narrowRho": 0.4752,
+    "wideRho": -0.1011,
+    "narrowWorstRetentionDb": -9.06,
+    "wideWorstRetentionDb": -9.66,
+    "narrowHfMaxDb": 3.79,
+    "wideHfMaxDb": 3.66
+  },
+  "samples": {
+    "phase": "sample-phase-antiphase-80hz.wav",
+    "band": "sample-band-split-180hz.wav"
+  }
+}

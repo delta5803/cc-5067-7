@@ -8,6 +8,10 @@ import { correlation, rms, db, energy } from '../analysis/measure.js';
 import { renderChain } from '../chain.js';
 import { getBuiltinMaterial, buildSweep, mulberry32 } from '../audio/materials.js';
 import { fft, impulseSpectrum } from '../dsp/fft.js';
+import {
+  DECORRELATOR_CONTRACT, powerAccounts, foldPolarityAware,
+  bandCorrelationEvidence, decorrelatorEvidence, buildPhaseSample, buildBandSample,
+} from '../dsp/contract.js';
 
 const SR = 48000;
 
@@ -479,6 +483,185 @@ export const CHECKS = [
         detail: '反相素材未保护时低频折叠损失 ' + loss + 'dB 并给出危险警告=' + cancelWarned +
           '；Haas 折叠高频频谱最大偏差 ' + hfMax + 'dB 并给出梳状警告=' + combWarned,
         metrics: { lfMonoLossDb: loss, cancelWarned, hfColorationMaxDb: hfMax, combWarned },
+      };
+    },
+  },
+
+  {
+    id: 'dual_power_accounts',
+    title: '双口径：各声道功率相等 与 合并后声能相等，并复核极性',
+    run() {
+      // Account 1 vs account 2 on a symmetric widen: L/R stay equal, fold keeps M.
+      const n = 65536;
+      const M = noise(n, 21, 0.35);
+      const S = noise(n, 22, 0.3);
+      const { L, R } = stereoFromMS(M, S);
+      const st = processStage(L, R, {
+        sr: SR, stageMode: 'widen', structure: 'ms', width: 1.8, decorr: 0, centerLock: false,
+      }, { cls: 'normal' });
+      const acc = powerAccounts(st.L, st.R, SR);
+      const perChannelEqual = acc.perChannelEqual;                 // E_L ≈ E_R
+      const foldKeepsMid = Math.abs(acc.foldMidDeltaDb) < 0.01;    // E_fold ≈ E_M
+
+      // Asymmetric Haas: per-channel power equality must NOT be assumed, while
+      // the fold-energy account is what actually moves. The two accounts differ.
+      const stHaas = processStage(L, R, {
+        sr: SR, stageMode: 'widen', structure: 'haas', width: 1, decorr: 0.9, haasMs: 12,
+      }, { cls: 'normal' });
+      const accHaas = powerAccounts(stHaas.L, stHaas.R, SR);
+      const accountsDiverge = Math.abs(accHaas.balanceDb) > 0.5;
+
+      // Polarity: an inverted channel must be detected, and the corrected fold
+      // must recover real energy instead of reading as a total collapse.
+      const toneL = tone(n, SR, 110, 0.5);
+      const toneR = new Float64Array(n);
+      for (let i = 0; i < n; i++) toneR[i] = -toneL[i];
+      const pol = foldPolarityAware(toneL, toneR, SR);
+
+      const ok = perChannelEqual && foldKeepsMid && accountsDiverge &&
+        pol.polarityReversed && pol.energyRecoveredDb > 20;
+      return {
+        ok,
+        detail: '对称扩宽 E_L≈E_R=' + perChannelEqual + '、折叠=M 偏差 ' + acc.foldMidDeltaDb.toFixed(2) +
+          'dB；Haas 左右平衡 ' + accHaas.balanceDb.toFixed(2) + 'dB（两口径确实分离）；' +
+          '反相输入被判定=' + pol.polarityReversed + '，极性校正折叠回收 ' + pol.energyRecoveredDb.toFixed(1) + 'dB。',
+        metrics: {
+          perChannelEqual, foldMidDeltaDb: acc.foldMidDeltaDb,
+          haasBalanceDb: accHaas.balanceDb, polarityReversed: pol.polarityReversed,
+          energyRecoveredDb: Number(pol.energyRecoveredDb.toFixed(2)),
+        },
+      };
+    },
+  },
+
+  {
+    id: 'phase_freq_samples',
+    title: '相位/频率样例可执行：反相与分频带抵消风险可复核',
+    run() {
+      const phase = buildPhaseSample(SR, 0.5, 80, 0.5);
+      const plain = foldPolarityAware(phase.L, phase.R, SR);
+      // Full inversion ⇒ plain fold collapses far below either channel.
+      const plainVsChanDb = plain.plainFoldEnergyDb - db(rms(phase.L));
+
+      const band = buildBandSample(SR, 1.0);
+      const ev = bandCorrelationEvidence(band.L, band.R, 180, SR);
+      const lowCancels = ev.low.correlation < -0.9;
+      const highKeeps = ev.high.correlation > 0.5;
+
+      const ok = plainVsChanDb < -20 && lowCancels && highKeeps;
+      return {
+        ok,
+        detail: '80Hz 反相正弦标准折叠比单声道低 ' + plainVsChanDb.toFixed(1) +
+          'dB（完全抵消）；分频样例低带 ρ=' + ev.low.correlation + '（抵消）、高带 ρ=' +
+          ev.high.correlation + '（保持）——风险只在分频点以下。',
+        metrics: {
+          phaseFoldVsChanDb: Number(plainVsChanDb.toFixed(2)),
+          bandLowRho: ev.low.correlation, bandHighRho: ev.high.correlation,
+        },
+      };
+    },
+  },
+
+  {
+    id: 'band_feedback_and_monitor_fold',
+    title: '失真频带回传宽度自动化；监听折叠读取工程侧声策略',
+    run() {
+      const b = getBuiltinMaterial('pair_b');
+      // Unprotected preserve-low on anti-phase bass: sub band must be the
+      // reported worst band, and the automation suggestion must name it.
+      const rRaw = renderChain(b.L, b.R, SR, {
+        sr: SR, autoProtect: false, lowMode: 'preserve', broadcast: 'direct_mid',
+        stageMode: 'crossover', structure: 'ms', width: 1, decorr: 0,
+      }, b.markers);
+      const rawWorst = rRaw.measurements.distortedBand;
+      const rawSuggest = rRaw.widthAutomation.suggestion;
+      const named = !!rawSuggest && rawSuggest.includes(rawWorst.name + '(');
+
+      // Centered-low policy must protect the sub band: retention rises sharply.
+      const rCenter = renderChain(b.L, b.R, SR, {
+        sr: SR, autoProtect: false, lowMode: 'center', broadcast: 'direct_mid',
+        stageMode: 'crossover', structure: 'ms', width: 1, decorr: 0,
+      }, b.markers);
+      const centerRetention = rCenter.measurements.bandDistortion.worstBand.retentionDb;
+      const improved = centerRetention > rawWorst.retentionDb + 10;
+
+      // Monitor fold honours the foldPolarity policy read from the project.
+      const invL = tone(65536, SR, 110, 0.5);
+      const invR = new Float64Array(invL.length);
+      for (let i = 0; i < invL.length; i++) invR[i] = -invL[i];
+      const plainRun = renderChain(invL, invR, SR, { sr: SR, foldPolarity: 'plain', stageMode: 'preserve' }, null);
+      const autoRun = renderChain(invL, invR, SR, { sr: SR, foldPolarity: 'auto', stageMode: 'preserve' }, null);
+      const plainRms = rms(plainRun.monitorFold);
+      const autoRms = rms(autoRun.monitorFold);
+      const monitorReadsPolicy = db(autoRms) - db(plainRms) > 20;
+
+      const ok = named && improved && monitorReadsPolicy;
+      return {
+        ok,
+        detail: '未保护最差频带 ' + rawWorst.name + '(' + rawWorst.low + '–' + rawWorst.high +
+          'Hz) 保留 ' + rawWorst.retentionDb + 'dB，自动化提示已点名；居中后提升到 ' +
+          centerRetention.toFixed(2) + 'dB；监听折叠按策略区分 plain/auto，能量差 ' +
+          (db(autoRms) - db(plainRms)).toFixed(1) + 'dB。',
+        metrics: {
+          rawWorstBand: rawWorst.name, rawRetentionDb: rawWorst.retentionDb,
+          centerRetentionDb: centerRetention, monitorPolicyDeltaDb: Number((db(autoRms) - db(plainRms)).toFixed(2)),
+        },
+      };
+    },
+  },
+
+  {
+    id: 'contract_matches_implementation',
+    title: '维护契约与实现一致（结构、响应、分频相关度）',
+    run() {
+      const ev = decorrelatorEvidence(SR);
+      // Published decorrelator facts must agree with a clean-room IR measurement.
+      const apOk = ev.allpassMaxMagDevDb < 0.6 && ev.allpassPhaseSpanRad > 3;
+      const dlOk = ev.delayPeakSample === ev.delayCommandSamples;
+
+      // Contract says symmetric structures preserve the fold; verify with the
+      // actual stage on a decorrelated input (not self-referential).
+      const n = 32768;
+      const M = noise(n, 41, 0.35);
+      const S = noise(n, 42, 0.3);
+      const { L, R } = stereoFromMS(M, S);
+      let foldOk = true;
+      for (const structure of ['ms', 'ap', 'delay']) {
+        const st = processStage(L, R, {
+          sr: SR, stageMode: 'widen', structure, width: 1.7, decorr: 0.6,
+          delayMs: 7, centerLock: true,
+        }, { cls: 'normal' });
+        const fold = new Float64Array(n);
+        for (let i = 0; i < n; i++) fold[i] = 0.5 * (st.L[i] + st.R[i]);
+        const err = maxAbsDiff(fold, M);
+        if (err > 1e-12) foldOk = false;
+      }
+      // Haas is the documented exception: its fold must NOT equal M.
+      const stH = processStage(L, R, {
+        sr: SR, stageMode: 'widen', structure: 'haas', width: 1, decorr: 0.9, haasMs: 10,
+      }, { cls: 'normal' });
+      const foldH = new Float64Array(n);
+      for (let i = 0; i < n; i++) foldH[i] = 0.5 * (stH.L[i] + stH.R[i]);
+      const haasDiffers = maxAbsDiff(foldH, M) > 1e-3;
+
+      const declaredExact = DECORRELATOR_CONTRACT.haas.monoFoldExact === false;
+
+      // Band coherence evidence at the crossover frequency must separate bands.
+      const band = buildBandSample(SR, 1.0);
+      const bev = bandCorrelationEvidence(band.L, band.R, 180, SR);
+      const bandsSeparate = bev.low.correlation < -0.5 && bev.high.correlation > 0.3;
+
+      const ok = apOk && dlOk && foldOk && haasDiffers && declaredExact && bandsSeparate;
+      return {
+        ok,
+        detail: '全通幅度偏差 ' + ev.allpassMaxMagDevDb + 'dB/相位行程 ' + ev.allpassPhaseSpanRad +
+          'rad；延迟峰 ' + ev.delayPeakSample + '=' + ev.delayCommandSamples + '；' +
+          '对称结构折叠=M 保持=' + foldOk + '，Haas 折叠偏离=' + haasDiffers +
+          '；分频相关度低/高=' + bev.low.correlation + '/' + bev.high.correlation + '。',
+        metrics: {
+          allpassMaxMagDevDb: ev.allpassMaxMagDevDb, delayPeakSample: ev.delayPeakSample,
+          symmetricFoldExact: foldOk, haasFoldDiffers: haasDiffers, bandsSeparate,
+        },
       };
     },
   },

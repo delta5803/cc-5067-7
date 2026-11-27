@@ -6,6 +6,7 @@ import { analyzeInput, measureRender, stereoResponseData, rms, db } from './anal
 import { processStage, processBroadcast, foldStereo } from './dsp/pipeline.js';
 import { lowPass, lr4Split } from './dsp/crossover.js';
 import { impulseSpectrum } from './dsp/fft.js';
+import { foldPolarityAware } from './dsp/contract.js';
 
 export function renderChain(inputL, inputR, sampleRate, config = {}, markers = null) {
   const cfg = { ...DEFAULT_CONFIG, ...config, sr: sampleRate };
@@ -14,6 +15,13 @@ export function renderChain(inputL, inputR, sampleRate, config = {}, markers = n
   const stage = processStage(inputL, inputR, cfg, analysis);
   const broadcast = processBroadcast(inputL, inputR, stage, cfg, analysis);
   const stageFold = foldStereo(stage);
+
+  // The monitor fold the user auditions can apply polarity correction so an
+  // inverted channel does not read as a total collapse. The raw (L+R)/2 stage
+  // fold above stays untouched and is what the measurements compare against.
+  const monitorFold = cfg.foldPolarity === 'auto'
+    ? foldPolarityAware(stage.L, stage.R, sampleRate).fold
+    : foldStereo(stage);
 
   const n = inputL.length;
   const dryMid = new Float64Array(n);
@@ -43,10 +51,31 @@ export function renderChain(inputL, inputR, sampleRate, config = {}, markers = n
 
   const warnings = buildWarnings(cfg, analysis, measurements, stage.effective, broadcast.route);
 
+  // Feedback path: the band the standard fold damages most is fed back to the
+  // width automation so the next render can avoid leaning on it.
+  const widthAutomation = buildWidthAutomation(cfg, measurements, stage.effective);
+
   return {
-    cfg, analysis, stage, broadcast, stageFold, dryMid,
-    measurements, warnings,
+    cfg, analysis, stage, broadcast, stageFold, monitorFold, dryMid,
+    measurements, warnings, widthAutomation,
     effective: { ...stage.effective, broadcastRoute: broadcast.route },
+  };
+}
+
+export function buildWidthAutomation(cfg, m, eff) {
+  const wb = m && m.bandDistortion ? m.bandDistortion.worstBand : null;
+  return {
+    requestedWidth: cfg.width ?? 1,
+    decorr: cfg.decorr ?? 0,
+    stageMode: eff ? eff.stageMode : cfg.stageMode,
+    // The most mono-hostile band, reported back from the fold measurement.
+    distortedBand: wb
+      ? { name: wb.name, low: wb.low, high: wb.high, retentionDb: wb.retentionDb, rho: wb.rho }
+      : null,
+    // Automation hint, not a quality verdict: narrow/lower wet in this band.
+    suggestion: wb && wb.retentionDb < -4
+      ? `${wb.name}(${wb.low}–${wb.high}Hz) 折叠保留 ${wb.retentionDb}dB（ρ=${wb.rho}）：请在该频带降低宽度/湿声`
+      : null,
   };
 }
 

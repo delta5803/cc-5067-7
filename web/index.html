@@ -18,6 +18,7 @@
   <div class="top-actions">
     <button id="btn-ab" class="btn" title="在原输入与舞台处理声之间快速切换（同播放位置）">A/B：原曲 ⇄ 处理</button>
     <button id="btn-export" class="btn primary">导出舞台 WAV</button>
+    <button id="btn-export-fold" class="btn" title="导出按监听折叠策略生成的单声道 WAV">导出折叠 WAV</button>
   </div>
 </header>
 
@@ -139,6 +140,25 @@
         <option value="phase_safe">分频旁路：相位安全低频（按能量选 M/S）</option>
       </select>
       <p class="meta" id="route-effective">实际路由：—</p>
+      <div class="slider-row" style="margin-top:16px">
+        <label for="fold-polarity">监听折叠策略（随工程保存）</label>
+        <select id="fold-polarity" class="select">
+          <option value="plain" selected>标准 (L+R)/2（反相会抵消）</option>
+          <option value="auto">极性校正折叠（反相自动纠正）</option>
+        </select>
+      </div>
+      <p class="meta" id="fold-policy-note">监听折叠读取本工程保存的侧声道处理策略。</p>
+      <button id="btn-reset-policy" class="btn small" style="margin-top:10px">恢复默认策略并清除工程保存</button>
+    </article>
+
+    <article class="card automation-card">
+      <h2>宽度自动化（失真频带回传）</h2>
+      <p class="meta" id="automation-band">最差频带：—</p>
+      <p class="meta" id="automation-hint">等待渲染。</p>
+      <div class="automation-actions">
+        <button id="btn-apply-automation" class="btn small" disabled>应用自动化（降低该带宽度）</button>
+        <span id="automation-applied" class="meta"></span>
+      </div>
     </article>
 
     <article class="card audition">
@@ -201,6 +221,20 @@
       <div id="warnings" class="warnings"><p class="meta">尚未渲染。</p></div>
     </article>
 
+    <article class="card status-card">
+      <div class="status-head">
+        <h2>立体宽度运行状态</h2>
+        <span id="run-status" class="run-badge idle">待机</span>
+      </div>
+      <div class="status-grid">
+        <div class="status-item"><span>处理链</span><b id="st-chain">—</b></div>
+        <div class="status-item"><span>声道相关性</span><b id="st-rho">—</b></div>
+        <div class="status-item"><span>试听音源</span><b id="st-source">—</b></div>
+        <div class="status-item"><span>折叠策略</span><b id="st-fold-policy">—</b></div>
+      </div>
+      <div id="status-anomalies" class="status-anomalies"></div>
+    </article>
+
     <article class="card">
       <h2>短时相关性轨迹（100 ms 窗）</h2>
       <canvas id="chart-trace" class="chart short"></canvas>
@@ -241,7 +275,7 @@
         <h2>脉冲 / 扫频 / 人声替代自检（与 npm test 同一套）</h2>
         <button id="run-selftest" class="btn primary">运行全部检查</button>
       </div>
-      <p id="selftest-summary" class="meta">自检会真实运行 M/S、等 ρ 对、路由探针、LR4、响应/延迟、扫频对比与能量核算。</p>
+      <p id="selftest-summary" class="meta">自检会真实运行 M/S、等 ρ 对、路由探针、LR4、响应/延迟、扫频对比、双口径能量与极性、相位/频带样例及契约一致性。</p>
       <div id="selftest-list" class="check-list"></div>
     </article>
 
@@ -249,7 +283,8 @@
 </main>
 
 <footer class="footer">
-  纯前端真实 DSP 链（无固定装饰数据）· 启动：<code>node server.js</code> → http://127.0.0.1:8770/ · 命令行测试：<code>npm test</code>
+  纯前端真实 DSP 链（无固定装饰数据）· 图形入口：<code>node server.js</code> → http://127.0.0.1:8770/ ·
+  兼容约定：<code>doc/stereo-width-compatibility.md</code> · 命令行仅辅助复核：<code>npm test</code> / <code>npm run verify:width</code> / <code>npm run check:docs</code>
 </footer>
 
 <script type="module" src="./js/ui/app.js"></script>

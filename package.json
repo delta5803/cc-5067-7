@@ -6,7 +6,11 @@
   "description": "Real stereo width processor: M/S gain, all-pass / short-delay decorrelation, crossover bass management, mono fold-down checks and live measurements.",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/run.mjs"
+    "test": "node test/run.mjs",
+    "verify:width": "node test/verify-width-package.mjs",
+    "check:docs": "node test/maintenance-check.mjs",
+    "gen:samples": "node test/gen-width-samples.mjs doc/samples",
+    "smoke": "node test/browser-smoke.mjs"
   },
   "engines": {
     "node": ">=18"
